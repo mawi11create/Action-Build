@@ -1537,17 +1537,29 @@ jobs:
             MAKE_ARGS=(RUSTC="$RUSTC_BIN" "${MAKE_ARGS[@]}")
           fi
 
-          make O=out "${MAKE_ARGS[@]}" gki_defconfig
+          make O=out "${MAKE_ARGS[@]}" olddefconfig
+          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
+          ccache -s
 
-          if [[ "$KERNEL_VERSION" == "5.10" || "$KERNEL_VERSION" == "5.15" ]]; then
-            echo ">> 设置 LTO = thin"
-            scripts/config --file out/.config -e LTO_CLANG
-            scripts/config --file out/.config -e LTO_CLANG_THIN
-            scripts/config --file out/.config -d LTO_CLANG_NONE
-            scripts/config --file out/.config -d LTO_CLANG_FULL
+      - name: Fallback to Build Kernel
+        if: ${{ github.event.inputs.FAST_BUILD == 'false' || steps.fast_build.outputs.fallback == 'true' }}
+        run: |
+          cd kernel_workspace
+          if [ -f ./kernel_platform/build_with_bazel.py ]; then
+            ./kernel_platform/oplus/bazel/oplus_modules_variant.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
+            ./kernel_platform/build_with_bazel.py -t ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
+          else
+            LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0 \
+            ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
           fi
 
-          "https://drive.google.com/uc?export=download&id=1ETEx-ctH9-_F6p69uAvY_-70jzyiIEGl"
+      - name: Make AnyKernel3
+        run: |
+          git clone https://github.com/Numbersf/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          mkdir -p kernel_workspace/kernel_platform/out/Final-Image-Find/
+          echo "Downloading boot.img from Google Drive..."
+          curl -L -o kernel_workspace/kernel_platform/out/Final-Image-Find/Image "https://drive.google.com/uc?export=download&confirm=t&id=1ETEx-ctH9-_F6p69uAvY_-70jzyiIEGl"
           echo "Downloaded: $(ls -lh kernel_workspace/kernel_platform/out/Final-Image-Find/Image)"
           cp kernel_workspace/kernel_platform/out/Final-Image-Find/Image ./AnyKernel3/Image
 
