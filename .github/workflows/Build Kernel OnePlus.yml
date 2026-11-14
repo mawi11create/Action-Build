@@ -65,6 +65,16 @@ on:
           - oneplus_pad_3_pro
           - oneplus_pad_4
           - oneplus_ace6_ultra
+      COMMON_REV:
+        type: string
+        description: "内核源码分支(留空=默认)//Kernel source branch for kernel_platform/common (leave empty = default)"
+        required: false
+        default: ""
+      REQUIRE_SUBLEVEL:
+        type: string
+        description: "要求的内核小版本号,不符则提前停止(留空=不检查)//Stop early unless kernel SUBLEVEL equals this, e.g. 157 (leave empty = no check)"
+        required: false
+        default: ""
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
@@ -483,6 +493,7 @@ jobs:
       - name: Initialize Repo and Sync
         env:
           FILE: ${{ github.event.inputs.FILE }}
+          COMMON_REV: ${{ github.event.inputs.COMMON_REV }}
         run: |
           cd kernel_workspace
           mkdir -p .repo/manifests
@@ -492,6 +503,22 @@ jobs:
           echo "使用$MANIFEST_REPO/$MANIFEST_REPO_NAME($MANIFEST_BRANCH)初始化仓库..."
           repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
           sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
+          if [ -n "$COMMON_REV" ]; then
+            if [[ ! "$COMMON_REV" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::COMMON_REV contains unsupported characters: $COMMON_REV"
+              exit 1
+            fi
+            echo "Overriding kernel_platform/common revision -> $COMMON_REV"
+            echo "--- manifest line before:"
+            grep -n 'path="kernel_platform/common"' ".repo/manifests/${FILE}.xml" || true
+            sed -i "/path=\"kernel_platform\/common\"/ s|revision=\"[^\"]*\"|revision=\"${COMMON_REV}\"|" ".repo/manifests/${FILE}.xml"
+            echo "--- manifest line after:"
+            grep -n 'path="kernel_platform/common"' ".repo/manifests/${FILE}.xml" || true
+            if ! grep 'path="kernel_platform/common"' ".repo/manifests/${FILE}.xml" | grep -qF "revision=\"${COMMON_REV}\""; then
+              echo "::error::Could not set the kernel source branch: the kernel_platform/common line in the manifest was not changed. See the lines printed above."
+              exit 1
+            fi
+          fi
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
 
           KERNEL_REPOS=""
@@ -577,6 +604,17 @@ jobs:
 
           # 内核版本的数字转换，仅前两位不包含 SUBLEVEL
           echo "KERNEL_SHORT_PATCH_VERSION=$(echo $NEW_VERSION | cut -d. -f1,2 | tr '.' '_')" >> $GITHUB_ENV
+
+      - name: Check Kernel Sublevel
+        if: ${{ github.event.inputs.REQUIRE_SUBLEVEL != '' }}
+        env:
+          REQUIRE_SUBLEVEL: ${{ github.event.inputs.REQUIRE_SUBLEVEL }}
+        run: |
+          echo "Kernel source version: ${VERSIONLEVEL}.${PATCHLEVEL}.${SUBLEVEL}  (required sublevel: ${REQUIRE_SUBLEVEL})"
+          if [ "${SUBLEVEL}" != "${REQUIRE_SUBLEVEL}" ]; then
+            echo "::error::Wrong kernel source: got ${VERSIONLEVEL}.${PATCHLEVEL}.${SUBLEVEL} but you required sublevel ${REQUIRE_SUBLEVEL}. Stopping now so you do not wait for a useless build."
+            exit 1
+          fi
 
       - name: Rust Version Handling
         run: |
@@ -1443,6 +1481,14 @@ jobs:
           make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
           make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
           ccache -s
+
+      - name: Upload Module.symvers (for later compatibility check)
+        if: ${{ github.event.inputs.FAST_BUILD == 'true' && steps.fast_build.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Module.symvers
+          path: kernel_workspace/kernel_platform/common/out/Module.symvers
+          if-no-files-found: ignore
 
       - name: Fallback to Build Kernel
         if: ${{ github.event.inputs.FAST_BUILD == 'false' || steps.fast_build.outputs.fallback == 'true' }}
